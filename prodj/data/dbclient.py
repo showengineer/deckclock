@@ -98,12 +98,15 @@ sort_types = {
 }
 
 def sockrcv(sock, length, timeout=1):
-  rdy = select([sock], [], [], timeout)
-  if rdy[0]:
-    return sock.recv(length)
-  else:
-    logging.warning("socket receive timeout")
-    return b""
+  try:
+    rdy = select([sock], [], [], timeout)
+    if rdy[0]:
+      return sock.recv(length)
+    else:
+      logging.warning("socket receive timeout")
+      return b""
+  except OSError as e:
+    raise TemporaryQueryError("DB socket receive failed: {}".format(e))
 
 class DBClient:
   def __init__(self, prodj):
@@ -398,10 +401,14 @@ class DBClient:
       if client is None:
         raise TemporaryQueryError("failed to get remote port, player {} unknown".format(player_number))
       sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-      sock.connect((client.ip_addr, packets.DBServerQueryPort))
-      sock.send(packets.DBServerQuery.build({}))
-      data = sockrcv(sock, 2)
-      sock.close()
+      try:
+        sock.connect((client.ip_addr, packets.DBServerQueryPort))
+        sock.send(packets.DBServerQuery.build({}))
+        data = sockrcv(sock, 2)
+      except OSError as e:
+        raise TemporaryQueryError("failed to query DB server port from player {}: {}".format(player_number, e))
+      finally:
+        sock.close()
       try:
         port = packets.DBServerReply.parse(data)
       except ConstructError as e:
@@ -412,7 +419,7 @@ class DBClient:
 
   def send_initial_packet(self, sock):
     init_packet = packets.DBFieldFixed("int32")
-    sock.send(init_packet.build(1))
+    self.socksnd(sock, init_packet.build(1))
     data = sockrcv(sock, 16)
     try:
       reply = init_packet.parse(data)
@@ -426,7 +433,7 @@ class DBClient:
       "type": "setup",
       "args": [{"type": "int32", "value": self.own_player_number}]
     }
-    sock.send(packets.DBMessage.build(query))
+    self.socksnd(sock, packets.DBMessage.build(query))
     data = sockrcv(sock, 48)
     if len(data) == 0:
       raise TemporaryQueryError("Failed to connect to player {}".format(player_number))
@@ -463,7 +470,10 @@ class DBClient:
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
-    sock.connect(ip_port)
+    try:
+      sock.connect(ip_port)
+    except OSError as e:
+      raise TemporaryQueryError("failed to connect to DB server of player {}: {}".format(player_number, e))
     self.socks[player_number] = (sock, 30, 1) # socket, ttl, transaction_id
 
     # send connection initialization packet
@@ -483,13 +493,13 @@ class DBClient:
   def socksnd(self, sock, data):
     try:
       sock.send(data)
-    except BrokenPipeError as e:
+    except OSError as e:
       player_number = next((n for n, d in self.socks.items() if d[0] == sock), None)
       if player_number is None:
-        raise FatalQueryError("socksnd failed with unknown sock")
+        raise TemporaryQueryError("DB socket send failed with unknown socket: {}".format(e))
       else:
         self.closeSocket(player_number)
-        raise TemporaryQueryError("Connection to player {} lost".format(player_number))
+        raise TemporaryQueryError("Connection to player {} lost: {}".format(player_number, e))
 
   def ensure_request_possible(self, request, player_number):
     client = self.prodj.cl.getClient(player_number)

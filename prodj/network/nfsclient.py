@@ -179,6 +179,25 @@ class NfsClient:
       logging.warning("returning empty buffer because: %s", e)
       return None
 
+  def get_download_filename(self, src_path, default=None):
+    src_path = (src_path or "").strip()
+    filename = os.path.basename(src_path.replace("\\", "/"))
+    filename = "".join("_" if c in '<>:"\\|?*' or ord(c) < 32 else c for c in filename)
+    filename = filename.strip(" .")
+    return filename if filename else default
+
+  def get_unique_download_path(self, filename):
+    dst_path = os.path.join(self.default_download_directory, filename)
+    if not os.path.exists(dst_path):
+      return dst_path
+    root, ext = os.path.splitext(filename)
+    counter = 1
+    while True:
+      dst_path = os.path.join(self.default_download_directory, "{} ({}){}".format(root, counter, ext))
+      if not os.path.exists(dst_path):
+        return dst_path
+      counter += 1
+
   # can be used as a callback for DataProvider.get_mount_info
   def enqueue_download_from_mount_info(self, request, player_number, slot, id_list, mount_info):
     if request != "mount_info" or "mount_path" not in mount_info:
@@ -189,7 +208,12 @@ class NfsClient:
       logging.error("player %d unknown", player_number)
       return
     src_path = mount_info["mount_path"]
-    dst_path = self.default_download_directory + os.path.split(src_path)[1]
+    default_filename = "player-{}-track-{}".format(player_number, id_list)
+    filename = self.get_download_filename(src_path, default_filename)
+    if not src_path:
+      logging.error("not enqueueing download for empty mount path from player %d track %s: %s", player_number, id_list, mount_info)
+      return
+    dst_path = self.get_unique_download_path(filename)
     future = self.enqueue_download(c.ip_addr, slot, src_path, dst_path)
     future.add_done_callback(generic_file_download_done_callback)
     return future

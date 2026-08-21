@@ -40,3 +40,12 @@ class DbclientTestCase(unittest.TestCase):
 
         self.assertEqual(download.write_offset, 0)
         self.assertEqual(download.blocks, {2: b"cd"})
+
+    def test_download_filename_is_sanitized(self):
+        self.assertEqual(
+            self.nc.get_download_filename('/Music/odd:track*name?.mp3'),
+            'odd_track_name_.mp3')
+
+    def test_empty_download_filename_is_rejected(self):
+        self.assertEqual(self.nc.get_download_filename('', 'player-2-track-2130'), 'player-2-track-2130')
+        self.assertEqual(self.nc.get_download_filename('/', 'player-2-track-2130'), 'player-2-track-2130')
