@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 
 import logging
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QMessageBox
 from PyQt5.QtGui import QPalette
 from PyQt5.QtCore import Qt, QTimer
 import signal
 import argparse
 
-from prodj.core.prodj import ProDj
+from prodj.core.prodj import ProDj, PortInUseError
 from prodj.gui.gui import Gui
 from prodj.gui.gui_settings import LtcSettings
 from prodj.audio.output import OutputConfig, format_output_devices, import_sounddevice
@@ -36,7 +36,7 @@ provider_group.add_argument('--disable-pdb', dest='enable_pdb', action='store_fa
 provider_group.add_argument('--disable-dbc', dest='enable_dbc', action='store_false', help='Disable DBClient provider')
 parser.add_argument('--color-preview', action='store_true', help='Show NXS2 colored preview waveforms')
 parser.add_argument('--color-waveform', action='store_true', help='Show NXS2 colored big waveforms')
-parser.add_argument('-c', '--color', action='store_true', help='Shortcut for --color-preview and --color-waveform')
+parser.add_argument('-c', '--color', action='store_true', help='Shortcut for --color-preview and --color-waveform', default=True)
 parser.add_argument('-q', '--quiet', action='store_const', dest='loglevel', const=logging.WARNING, help='Only display warning messages', default=logging.INFO)
 parser.add_argument('-d', '--debug', action='store_const', dest='loglevel', const=logging.DEBUG, help='Display verbose debugging information')
 parser.add_argument('--dump-packets', action='store_const', dest='loglevel', const=0, help='Dump packet fields for debugging', default=logging.INFO)
@@ -44,7 +44,7 @@ parser.add_argument('--chunk-size', dest='chunk_size', help='Chunk size of NFS d
 parser.add_argument('-f', '--fullscreen', action='store_true', help='Start with fullscreen window')
 parser.add_argument('-l', '--layout', dest='layout', help='Display layout, values are xy (default), yx, xx, yy, row or column', type=arg_layout, default="xy")
 parser.add_argument('--player-slots', type=arg_player_slots, default=4, help='Show a fixed number of player sections, either 4 or 6')
-parser.add_argument('--vcdj-player', type=int, default=None, help='Virtual CDJ player number, defaults to player-slots + 1')
+parser.add_argument('--vcdj-player', type=int, default=None, help='Virtual CDJ player number, defaults to the first free number after player-slots')
 parser.add_argument('--list-audio-devices', action='store_true', help='List audio output devices and exit')
 parser.add_argument('--ltc-player', type=int, default=None, help='Generate LTC from this player number')
 parser.add_argument('--ltc-device', type=int, default=None, help='Audio output device index for LTC')
@@ -107,10 +107,17 @@ signal.signal(signal.SIGINT, lambda s,f: app.quit())
 prodj.set_client_keepalive_callback(gui.keepalive_callback)
 prodj.set_client_change_callback(gui.client_change_callback)
 prodj.set_media_change_callback(gui.media_callback)
-prodj.start()
-vcdj_player = args.vcdj_player if args.vcdj_player is not None else args.player_slots + 1
-prodj.vcdj_set_player_number(vcdj_player)
-prodj.vcdj_enable()
+try:
+  prodj.start()
+except PortInUseError as e:
+  logging.error("%s", e)
+  QMessageBox.critical(None, "DeckClock", str(e))
+  raise SystemExit(1)
+if args.vcdj_player is not None:
+  prodj.vcdj_set_player_number(args.vcdj_player)
+  prodj.vcdj_enable()
+else:
+  prodj.vcdj_enable(args.player_slots + 1)
 
 ltc_state = {
   "service": None,
