@@ -2,7 +2,6 @@ import sys
 import logging
 import math
 import time
-from pathlib import Path
 from threading import Lock
 from PyQt5.QtWidgets import QFrame, QGridLayout, QLabel, QMenu, QPushButton, QSizePolicy, QHBoxLayout, QVBoxLayout, QWidget
 from PyQt5.QtGui import QColor, QPainter, QPixmap, QIcon
@@ -11,6 +10,7 @@ from PyQt5.QtCore import pyqtSignal, Qt, QSize
 from .gui_browser import Browser, printableField
 from .gui_about import AboutDialog
 from .gui_settings import SettingsDialog
+from .resources import resource_path
 from .waveform_gl import GLWaveformWidget
 from .preview_waveform_qt import PreviewWaveformWidget
 from prodj.network.packets import PlayStateStopped
@@ -402,7 +402,7 @@ class Gui(QWidget):
   def __init__(self, prodj, show_color_waveform=False, show_color_preview=False, arg_layout="xy", player_slots=4):
     super().__init__()
     self.prodj = prodj
-    self.setWindowIcon(QIcon("favicon.ico"))
+    self.setWindowIcon(QIcon(str(resource_path("favicon.ico"))))
     self.setWindowTitle('DeckClock')
 
     self.setAutoFillBackground(True)
@@ -457,8 +457,7 @@ class Gui(QWidget):
     header_layout.setContentsMargins(4, 0, 4, 6)
 
     logo = QLabel(header)
-    logo_path = Path("logo_white.png")
-    logo_pixmap = QPixmap(str(logo_path))
+    logo_pixmap = QPixmap(str(resource_path("logo_white.png")))
     if not logo_pixmap.isNull():
       logo.setPixmap(logo_pixmap.scaledToHeight(44, Qt.SmoothTransformation))
     logo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)

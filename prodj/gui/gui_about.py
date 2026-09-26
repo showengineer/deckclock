@@ -2,10 +2,11 @@ import logging
 from PyQt5.QtWidgets import QComboBox, QHeaderView, QLabel, QPushButton, QSizePolicy, QTableView, QTextEdit, QHBoxLayout, QVBoxLayout, QWidget
 from PyQt5.QtGui import QPalette, QStandardItem, QStandardItemModel, QPixmap
 from PyQt5.QtCore import Qt, pyqtSignal
-from pathlib import Path
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QDialog, QLabel, QPushButton, QVBoxLayout
+
+from .resources import resource_path
 
 
 class AboutDialog(QDialog):
@@ -19,8 +20,7 @@ class AboutDialog(QDialog):
     title.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
     logo = QLabel(self)
-    logo_path = Path("logo_white.png")
-    logo_pixmap = QPixmap(str(logo_path))
+    logo_pixmap = QPixmap(str(resource_path("logo_white.png")))
     if not logo_pixmap.isNull():
       logo.setPixmap(logo_pixmap.scaledToHeight(108, Qt.SmoothTransformation))
     logo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)

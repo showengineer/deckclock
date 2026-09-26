@@ -2,10 +2,10 @@
 
 
 a = Analysis(
-    ['monitor-qt.py'],
+    ['deckclock.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('favicon.ico', '.'), ('logo_white.png', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -21,7 +21,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='monitor-qt',
+    name='deckclock',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -32,6 +32,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=['favicon.ico'],
 )
 coll = COLLECT(
     exe,
@@ -40,5 +41,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='monitor-qt',
+    name='deckclock',
 )
