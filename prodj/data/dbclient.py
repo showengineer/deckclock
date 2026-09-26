@@ -4,7 +4,6 @@ from select import select
 from construct import ConstructError, byte2int
 
 from prodj.network import packets
-from prodj.data import dataprovider
 from prodj.data.exceptions import FatalQueryError, TemporaryQueryError
 from prodj.pdblib.usbanlz import AnlzTag
 
@@ -276,7 +275,7 @@ class DBClient:
     if request_type == "root_menu_request":
       query["args"].append({"type": "int32", "value": 0})
       query["args"].append({"type": "int32", "value": 0xffffff})
-    elif request_type in ["metadata_request", "track_data_request", "track_info_request"]:
+    elif request_type in ["metadata_request", "mount_info_request", "track_data_request", "track_info_request"]:
       query["args"].append({"type": "int32", "value": id_list[0]})
     elif request_type == "playlist_request":
       query["args"].append({"type": "int32", "value": sort_id})
@@ -569,7 +568,10 @@ class DBClient:
       except ConstructError as e:
         raise FatalQueryError("failed to parse beatgrid data: {}".format(e))
     elif request == "mount_info":
-      return self.query_list(*params[:2], None, [params[2]], "mount_info_request")
+      reply = self.query_list(*params[:2], None, [params[2]], "mount_info_request")
+      if not reply or not reply.get("mount_path"):
+        raise TemporaryQueryError("player {} returned no mount path for track {}".format(params[0], params[2]))
+      return reply
     elif request == "track_info":
       return self.query_list(*params[:2], None, [params[2]], "track_info_request")
     else:

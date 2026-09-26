@@ -8,7 +8,7 @@ from construct import Aligned, ConstructError, GreedyBytes
 from threading import Thread
 
 from .packets_nfs import getNfsCallStruct, getNfsResStruct, MountMntArgs, MountMntRes, MountVersion, NfsVersion, PortmapArgs, PortmapPort, PortmapVersion, PortmapRes, RpcMsg
-from .rpcreceiver import RpcReceiver
+from .rpcreceiver import RpcReceiver, ReceiveTimeout
 from .nfsdownload import NfsDownload, generic_file_download_done_callback
 
 def new_socket_reader_loop():
@@ -140,11 +140,53 @@ class NfsClient:
     }
     return await self.NfsCall(host, "lookup", nfscall)
 
+  async def NfsReadDir(self, host, fhandle):
+    cookie = b"\x00" * 4
+    names = []
+    for _ in range(100):
+      reply = await self.NfsCall(host, "readdir", {
+        "fhandle": fhandle, "cookie": cookie, "count": 1024})
+      entries = [entry for entry in reply.entries if entry.present]
+      names.extend(entry.name for entry in entries)
+      if reply.eof:
+        return names
+      if not entries or entries[-1].cookie == cookie:
+        raise RuntimeError("NFS directory listing did not advance")
+      cookie = entries[-1].cookie
+    raise RuntimeError("NFS directory listing exceeded 100 pages")
+
+  async def NfsLookupWithFilenameFallback(self, host, name, fhandle):
+    try:
+      return await self.NfsLookup(host, name, fhandle)
+    except RuntimeError as e:
+      if str(e) != "NFS call failed: err_noent" or not any(ord(ch) < 32 for ch in name):
+        raise
+      prefix = name[:next(i for i, ch in enumerate(name) if ord(ch) < 32)]
+      if len(prefix) < 8:
+        raise
+      extension = os.path.splitext(name)[1].casefold()
+      try:
+        names = await self.NfsReadDir(host, fhandle)
+      except (RuntimeError, ReceiveTimeout) as listing_error:
+        logging.debug("NFS directory listing unavailable for %r: %s", name, listing_error)
+        raise e
+      matches = [candidate for candidate in names
+        if candidate.casefold().startswith(prefix.casefold())
+        and os.path.splitext(candidate)[1].casefold() == extension]
+      if len(matches) != 1:
+        logging.warning("NFS filename %r has %d matching directory entries", name, len(matches))
+        raise
+      logging.warning("NFS filename %r resolved to directory entry %r", name, matches[0])
+      return await self.NfsLookup(host, matches[0], fhandle)
+
   async def NfsLookupPath(self, ip, mount_handle, path):
-    tree = filter(None, path.split("/"))
-    for item in tree:
+    tree = list(filter(None, path.split("/")))
+    for index, item in enumerate(tree):
       logging.debug("looking up \"%s\"", item)
-      nfsreply = await self.NfsLookup(ip, item, mount_handle)
+      if index == len(tree) - 1:
+        nfsreply = await self.NfsLookupWithFilenameFallback(ip, item, mount_handle)
+      else:
+        nfsreply = await self.NfsLookup(ip, item, mount_handle)
       mount_handle = nfsreply["fhandle"]
     return nfsreply
 
@@ -233,8 +275,6 @@ class NfsClient:
 
     mount_handle = await self.MountMnt((ip, mount_port), export)
     download = NfsDownload(self, (ip, nfs_port), mount_handle, src_path)
-    if dst_path is not None:
-      download.setFilename(dst_path)
 
     # TODO: NFS UMNT
-    return await download.start()
+    return await download.start(dst_path)

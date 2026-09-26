@@ -1,7 +1,7 @@
 import logging
-from PyQt5.QtWidgets import QComboBox, QHeaderView, QLabel, QPushButton, QSizePolicy, QTableView, QTextEdit, QHBoxLayout, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QComboBox, QHeaderView, QLabel, QLineEdit, QPushButton, QSizePolicy, QTableView, QTextEdit, QHBoxLayout, QVBoxLayout, QWidget
 from PyQt5.QtGui import QPalette, QStandardItem, QStandardItemModel
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, QSortFilterProxyModel, pyqtSignal
 
 from prodj.data.dbclient import sort_types
 
@@ -26,6 +26,7 @@ def ratingString(rating):
   return "".join(rating*stars[0]+(5-rating)*stars[1])
 
 def printableField(field):
+  field = str(field)
   if field == "bpm":
     return field.upper()
   else:
@@ -58,6 +59,12 @@ class Browser(QWidget):
     # upper part
     self.path = QLabel(self)
     self.path.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+    self.search_edit = QLineEdit(self)
+    self.search_edit.setPlaceholderText("Search")
+    self.search_edit.setClearButtonEnabled(True)
+    self.search_edit.setMinimumWidth(180)
+    self.search_edit.setMaximumWidth(320)
+    self.search_edit.textChanged.connect(self.searchChanged)
     self.sort_box = QComboBox(self)
     for sort in sort_types:
       self.sort_box.addItem(printableField(sort), sort)
@@ -69,14 +76,19 @@ class Browser(QWidget):
 
     top_layout = QHBoxLayout()
     top_layout.addWidget(self.path)
+    top_layout.addWidget(self.search_edit)
     top_layout.addWidget(self.sort_box)
     top_layout.addWidget(self.back_button)
     top_layout.setStretch(0, 1)
 
     # mid part
     self.model = QStandardItemModel(self)
+    self.search_model = QSortFilterProxyModel(self)
+    self.search_model.setSourceModel(self.model)
+    self.search_model.setFilterKeyColumn(-1)
+    self.search_model.setFilterCaseSensitivity(Qt.CaseInsensitive)
     self.view = QTableView(self)
-    self.view.setModel(self.model)
+    self.view.setModel(self.search_model)
     self.view.verticalHeader().hide()
     #self.view.verticalHeader().setSectionResizeMode(QHeaderView.ResizeToContents);
     self.view.verticalHeader().setSectionResizeMode(QHeaderView.Fixed);
@@ -135,13 +147,14 @@ class Browser(QWidget):
     self.path.setText("\u27a4".join(self.path_stack))
 
   def mediaMenu(self):
+    self.search_edit.clear()
+    self.clearTrackSelection()
     c = self.prodj.cl.getClient(self.player_number)
     if c is None:
       logging.warning("failed to get client for player %d", self.player_number)
       return
     self.menu = "media"
     self.slot = None
-    self.track_id = None
     self.path_stack.clear()
     self.path.setText("Media overview")
     self.model.clear()
@@ -164,6 +177,7 @@ class Browser(QWidget):
     logging.debug("renderRootMenu %s %s", str(request), str(player_number))
     if player_number != self.player_number:
       return
+    self.clearTrackSelection()
     self.menu = "root"
     self.slot = slot
     self.model.clear()
@@ -224,6 +238,7 @@ class Browser(QWidget):
     logging.debug("rendering %s list from player %d", request, player_number)
     if player_number != self.player_number:
       return
+    self.clearTrackSelection()
     self.menu = request
     self.slot = slot
     self.model.clear()
@@ -259,15 +274,27 @@ class Browser(QWidget):
     self.prodj.data.get_metadata(self.player_number, self.slot, track_id, self.storeRequest)
 
   def renderMetadata(self, request, source_player_number, slot, track_id, metadata):
+    if track_id != self.track_id or slot != self.slot or source_player_number != self.player_number:
+      return
     md = ""
     for key in [k for k in ["title", "artist", "album", "genre", "key", "bpm", "comment", "duration"] if k in metadata]:
       md += "{}:\t{}\n".format(printableField(key), metadata[key])
     if "rating" in metadata:
       md += "{}:\t{}\n".format("Rating", ratingString(metadata["rating"]))
     self.metadata_edit.setText(md)
-    self.track_id = track_id
+
+  def searchChanged(self, text):
+    self.search_model.setFilterFixedString(text.strip())
+    self.clearTrackSelection()
+
+  def clearTrackSelection(self):
+    self.view.clearSelection()
+    self.track_id = None
+    self.metadata_edit.clear()
+    self.updateButtons()
 
   def backButtonClicked(self):
+    self.search_edit.clear()
     if self.menu in ["title", "artist", "album", "genre"]:
       self.rootMenu(self.slot)
     elif self.menu == "title_by_artist_album":
@@ -303,10 +330,12 @@ class Browser(QWidget):
     self.updatePath()
 
   def tableItemClicked(self, index):
-    data = self.model.itemFromIndex(index).data()
+    data = self.model.itemFromIndex(self.search_model.mapToSource(index)).data()
     logging.debug("clicked data %s", data)
     if data is None:
       return
+    if data["type"] not in ["title", "title_by_album", "title_by_artist_album", "title_by_genre_artist_album", "playlist"]:
+      self.search_edit.clear()
     if data["type"] == "media":
       self.updatePath(data["name"].upper())
       self.rootMenu(data["name"])
@@ -357,6 +386,8 @@ class Browser(QWidget):
         self.updatePath(data["folder"])
         self.folderPlaylistMenu(data["folder_id"])
     elif data["type"] in ["title", "title_by_album", "title_by_artist_album", "title_by_genre_artist_album", "playlist"]:
+      self.track_id = data["track_id"]
+      self.metadata_edit.clear()
       self.metadata(data["track_id"])
     else:
       logging.warning("unhandled click type %s", data["type"])
@@ -391,8 +422,10 @@ class Browser(QWidget):
         self.prodj.nfs.enqueue_download_from_mount_info)
 
   def updateButtons(self):
+    track_selected = self.slot is not None and self.track_id is not None
     for i in range(1,5):
-      self.load_buttons[i-1].setEnabled(self.prodj.cl.getClient(i) is not None)
+      self.load_buttons[i-1].setEnabled(track_selected and self.prodj.cl.getClient(i) is not None)
+    self.download_button.setEnabled(track_selected)
 
   # special request handling to get into qt gui thread
   # storeRequest is called from outside (non-qt gui)

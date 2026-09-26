@@ -1,10 +1,13 @@
 import unittest
-from unittest.mock import Mock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 import socket
+
+from construct import Int32ub, PascalString
 
 from prodj.network.nfsdownload import NfsDownload
 from prodj.network.nfsclient import NfsClient
-from prodj.network.packets_nfs import RpcMsg
+from prodj.network.packets_nfs import RpcMsg, getNfsResStruct
 
 class MockSock(Mock):
     def __init__(self, inet, type):
@@ -49,3 +52,71 @@ class DbclientTestCase(unittest.TestCase):
     def test_empty_download_filename_is_rejected(self):
         self.assertEqual(self.nc.get_download_filename('', 'player-2-track-2130'), 'player-2-track-2130')
         self.assertEqual(self.nc.get_download_filename('/', 'player-2-track-2130'), 'player-2-track-2130')
+
+
+class NfsDownloadStartTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_source_does_not_open_destination(self):
+        nfsclient = Mock()
+        nfsclient.NfsLookupPath.side_effect = RuntimeError("NFS call failed: err_noent")
+        download = NfsDownload(nfsclient, ("169.254.1.1", 2049), b"", "/missing/export.pdb")
+        download.setFilename = Mock()
+
+        with self.assertRaisesRegex(RuntimeError, "err_noent"):
+            await download.start("databases/player-3-usb.pdb")
+        download.setFilename.assert_not_called()
+
+    async def test_control_character_filename_uses_unique_directory_entry(self):
+        client = NfsClient(None)
+        self.addCleanup(client.loop.close)
+        requested = "TiK ToK (Explicit Version) (Audio) \x14\u2020Kesha.mp3"
+        actual = "TiK ToK (Explicit Version) (Audio) Kesha.mp3"
+        client.NfsLookup = AsyncMock(side_effect=[RuntimeError("NFS call failed: err_noent"), {"fhandle": b"ok"}])
+        client.NfsReadDir = AsyncMock(return_value=[actual])
+
+        result = await client.NfsLookupWithFilenameFallback(("169.254.1.1", 2049), requested, b"dir")
+
+        self.assertEqual(result["fhandle"], b"ok")
+        self.assertEqual(client.NfsLookup.call_args_list[1].args[1], actual)
+
+    async def test_ambiguous_directory_entries_do_not_select_a_file(self):
+        client = NfsClient(None)
+        self.addCleanup(client.loop.close)
+        requested = "TiK ToK (Explicit Version) (Audio) \x14\u2020Kesha.mp3"
+        client.NfsLookup = AsyncMock(side_effect=RuntimeError("NFS call failed: err_noent"))
+        client.NfsReadDir = AsyncMock(return_value=[
+            "TiK ToK (Explicit Version) (Audio) Kesha.mp3",
+            "TiK ToK (Explicit Version) (Audio) Live.mp3"])
+
+        with self.assertRaisesRegex(RuntimeError, "err_noent"):
+            await client.NfsLookupWithFilenameFallback(("169.254.1.1", 2049), requested, b"dir")
+
+        client.NfsLookup.assert_awaited_once()
+
+    def test_readdir_response_decodes_padded_utf16_filename(self):
+        name = "Kesha.mp3"
+        encoded_name = PascalString(Int32ub, encoding="utf-16-le").build(name)
+        padding = b"\x00" * (-len(encoded_name) % 4)
+        response = (Int32ub.build(0) + Int32ub.build(1) + Int32ub.build(42)
+                    + encoded_name + padding + b"next" + Int32ub.build(0) + Int32ub.build(1))
+
+        parsed = getNfsResStruct("readdir").parse(response)
+
+        self.assertEqual(parsed.content.entries[0].name, name)
+        self.assertEqual(parsed.content.entries[0].cookie, b"next")
+        self.assertEqual(parsed.content.eof, 1)
+
+    async def test_readdir_follows_cookies_until_end(self):
+        client = NfsClient(None)
+        self.addCleanup(client.loop.close)
+        first = SimpleNamespace(entries=[
+            SimpleNamespace(present=1, name="first.mp3", cookie=b"next"),
+            SimpleNamespace(present=0)], eof=0)
+        second = SimpleNamespace(entries=[
+            SimpleNamespace(present=1, name="second.mp3", cookie=b"last"),
+            SimpleNamespace(present=0)], eof=1)
+        client.NfsCall = AsyncMock(side_effect=[first, second])
+
+        names = await client.NfsReadDir(("169.254.1.1", 2049), b"dir")
+
+        self.assertEqual(names, ["first.mp3", "second.mp3"])
+        self.assertEqual(client.NfsCall.call_args_list[1].args[2]["cookie"], b"next")

@@ -43,7 +43,7 @@ class PDBProvider:
   def delete_pdb(self, filename):
     try:
       os.remove(filename)
-    except OSError:
+    except FileNotFoundError:
       pass
 
   def download_pdb(self, player_number, slot):
@@ -51,14 +51,19 @@ class PDBProvider:
     if player is None:
       raise FatalQueryError("player {} not found in clientlist".format(player_number))
     filename = "databases/player-{}-{}.pdb".format(player_number, slot)
-    self.delete_pdb(filename)
     try:
+      self.delete_pdb(filename)
       try:
         self.prodj.nfs.enqueue_download(player.ip_addr, slot, "/PIONEER/rekordbox/export.pdb", filename, sync=True)
-      except FileNotFoundError as e:
+      except FileNotFoundError:
         logging.debug("default pdb path not found on player %d, trying MacOS path", player_number)
         self.prodj.nfs.enqueue_download(player.ip_addr, slot, "/.PIONEER/rekordbox/export.pdb", filename, sync=True)
-    except (RuntimeError, ReceiveTimeout) as e:
+      except RuntimeError as e:
+        if str(e) != "NFS call failed: err_noent":
+          raise
+        logging.debug("default pdb path not found on player %d, trying MacOS path", player_number)
+        self.prodj.nfs.enqueue_download(player.ip_addr, slot, "/.PIONEER/rekordbox/export.pdb", filename, sync=True)
+    except (OSError, RuntimeError, ReceiveTimeout) as e:
       raise FatalQueryError("database download from player {} failed: {}".format(player_number, e))
     return filename
 
@@ -77,8 +82,7 @@ class PDBProvider:
         db = self.download_and_parse_pdb(player_number, slot)
       except FatalQueryError as e:
         db = InvalidPDBDatabase(str(e))
-      finally:
-        self.dbs[player_number, slot] = db
+      self.dbs[player_number, slot] = db
     else:
       db = self.dbs[player_number, slot]
     if isinstance(db, InvalidPDBDatabase):

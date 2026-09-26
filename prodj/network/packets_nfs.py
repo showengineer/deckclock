@@ -1,4 +1,4 @@
-from construct import Bytes, Const, Default, Enum, FocusedSeq, GreedyBytes, If, Int32ub, Pass, PascalString, Prefixed, Struct, Switch, this
+from construct import Aligned, Bytes, Const, Default, Enum, FocusedSeq, GreedyBytes, If, Int32ub, Pass, PascalString, Prefixed, RepeatUntil, Struct, Switch, this
 
 RpcMsgType = Enum(Int32ub,
   call = 0,
@@ -253,6 +253,12 @@ NfsDiropArgs = Struct(
   "name" / PascalString(Int32ub, encoding="utf-16-le")
 )
 
+NfsReaddirArgs = Struct(
+  "fhandle" / NfsFhandle,
+  "cookie" / Bytes(4),
+  "count" / Int32ub
+)
+
 NfsFileopArgs = Struct(
   "fhandle" / NfsFhandle,
   "offset" / Int32ub,
@@ -263,6 +269,8 @@ NfsFileopArgs = Struct(
 def getNfsCallStruct(procedure):
   if procedure == "lookup":
     callStruct = NfsDiropArgs
+  elif procedure == "readdir":
+    callStruct = NfsReaddirArgs
   elif procedure == "getattr":
     callStruct = NfsFhandle
   elif procedure == "read":
@@ -284,9 +292,23 @@ NfsFileopRes = Struct(
   )
 )
 
+NfsReaddirEntry = Struct(
+  "present" / Int32ub,
+  "fileid" / If(this.present != 0, Int32ub),
+  "name" / If(this.present != 0, Aligned(4, PascalString(Int32ub, encoding="utf-16-le"))),
+  "cookie" / If(this.present != 0, Bytes(4))
+)
+
+NfsReaddirRes = Struct(
+  "entries" / RepeatUntil(lambda entry, entries, ctx: entry.present == 0, NfsReaddirEntry),
+  "eof" / Int32ub
+)
+
 def getNfsResStruct(procedure):
   if procedure == "lookup":
     resStruct = NfsDiropRes
+  elif procedure == "readdir":
+    resStruct = NfsReaddirRes
   elif procedure == "getattr":
     resStruct = NfsFhandle
   elif procedure == "read":

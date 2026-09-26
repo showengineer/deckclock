@@ -17,6 +17,7 @@ class DataProvider(Thread):
 
     self.pdb_enabled = True
     self.pdb = PDBProvider(prodj)
+    self._logged_pdb_failures = {}
 
     self.dbc_enabled = True
     self.dbc = DBClient(prodj)
@@ -49,9 +50,11 @@ class DataProvider(Thread):
     self.color_waveform_store.stop()
     self.color_preview_waveform_store.stop()
     self.beatgrid_store.stop()
-    self.join()
+    if self.is_alive():
+      self.join()
 
   def cleanup_stores_from_changed_media(self, player_number, slot):
+    self._logged_pdb_failures.pop((player_number, slot), None)
     self.metadata_store.removeByPlayerSlot(player_number, slot)
     self.artwork_store.removeByPlayerSlot(player_number, slot)
     self.waveform_store.removeByPlayerSlot(player_number, slot)
@@ -164,7 +167,12 @@ class DataProvider(Thread):
         logging.debug("trying request %s %s from pdb", request, str(params))
         reply = self._handle_request_from_pdb(request, params)
       except FatalQueryError as e: # on a fatal error, continue with dbc
-        logging.warning("pdb failed [%s]", str(e))
+        failure_key = params[:2]
+        if self._logged_pdb_failures.get(failure_key) != str(e):
+          logging.warning("pdb failed [%s]", e)
+          self._logged_pdb_failures[failure_key] = str(e)
+        else:
+          logging.debug("pdb still unavailable for %s", failure_key)
         if not self.dbc_enabled:
           raise
     if self.dbc_enabled and reply is None:

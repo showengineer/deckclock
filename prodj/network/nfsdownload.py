@@ -42,10 +42,12 @@ class NfsDownload:
     # when continuously available
     self.blocks = dict()
 
-  async def start(self):
+  async def start(self, dst_path=None):
     lookup_result = await self.nfsclient.NfsLookupPath(self.host, self.mount_handle, self.src_path)
     self.size = lookup_result.attrs.size
     self.fhandle = lookup_result.fhandle
+    if dst_path is not None:
+      self.setFilename(dst_path)
     self.started_at = time.time()
     if self.size == 0:
       self.finish()
