@@ -1,5 +1,6 @@
 import socket
 import logging
+import errno
 from threading import Thread
 from select import select
 from enum import Enum
@@ -17,6 +18,11 @@ class OwnIpStatus(Enum):
   waiting = 2,
   acquired = 3
 
+class PortInUseError(Exception):
+  def __init__(self, port):
+    self.port = port
+    super().__init__("Port {} is currently being used. Exiting".format(port))
+
 class ProDj(Thread):
   def __init__(self):
     super().__init__()
@@ -32,19 +38,32 @@ class ProDj(Thread):
     self.status_port = 50002
     self.need_own_ip = OwnIpStatus.notNeeded
     self.own_ip = None
+    self.vcdj_player_number_auto = True
 
   def start(self):
-    self.keepalive_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    self.keepalive_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    self.keepalive_sock.bind((self.keepalive_ip, self.keepalive_port))
-    logging.info("Listening on {}:{} for keepalive packets".format(self.keepalive_ip, self.keepalive_port))
-    self.beat_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    self.beat_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    self.beat_sock.bind((self.beat_ip, self.beat_port))
-    logging.info("Listening on {}:{} for beat packets".format(self.beat_ip, self.beat_port))
-    self.status_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    self.status_sock.bind((self.status_ip, self.status_port))
-    logging.info("Listening on {}:{} for status packets".format(self.status_ip, self.status_port))
+    sockets = []
+    try:
+      for name, ip, port in (
+          ("keepalive", self.keepalive_ip, self.keepalive_port),
+          ("beat", self.beat_ip, self.beat_port),
+          ("status", self.status_ip, self.status_port)):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sockets.append(sock)
+        try:
+          if name != "status":
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+          sock.bind((ip, port))
+        except OSError as e:
+          if e.errno in (errno.EADDRINUSE, 10048) or getattr(e, "winerror", None) == 10048:
+            raise PortInUseError(port) from e
+          raise
+        setattr(self, name + "_sock", sock)
+        logging.info("Listening on %s:%d for %s packets", ip, port, name)
+    except (OSError, PortInUseError):
+      for sock in sockets:
+        sock.close()
+      self.data.stop()
+      raise
     self.socks = [self.keepalive_sock, self.beat_sock, self.status_sock]
     self.keep_running = True
     self.data.start()
@@ -59,13 +78,33 @@ class ProDj(Thread):
     self.join()
     self.keepalive_sock.close()
     self.beat_sock.close()
+    self.status_sock.close()
 
-  def vcdj_set_player_number(self, vcdj_player_number=5):
+  def get_used_player_numbers(self):
+    return set(c.player_number for c in self.cl.clients)
+
+  def vcdj_next_available_player_number(self, preferred=5, reserved=None):
+    if reserved is None:
+      reserved = set()
+    used = self.get_used_player_numbers() | set(reserved)
+    player_number = preferred
+    while player_number in used:
+      player_number += 1
+    return player_number
+
+  def vcdj_set_player_number(self, vcdj_player_number=5, auto=False):
     logging.info("Player number set to {}".format(vcdj_player_number))
     self.vcdj.player_number = vcdj_player_number
+    self.vcdj_player_number_auto = auto
     #self.data.dbc.own_player_number = vcdj_player_number
 
-  def vcdj_enable(self):
+  def vcdj_auto_set_player_number(self, preferred=5, reserved=None):
+    player_number = self.vcdj_next_available_player_number(preferred, reserved)
+    self.vcdj_set_player_number(player_number, auto=True)
+
+  def vcdj_enable(self, preferred_player_number=None):
+    if preferred_player_number is not None:
+      self.vcdj_auto_set_player_number(preferred_player_number)
     self.vcdj_set_iface()
     self.vcdj.start()
 
@@ -102,6 +141,17 @@ class ProDj(Thread):
       logging.warning("Failed to parse keepalive packet from {}, {} bytes: {}".format(addr, len(data), e))
       packets_dump.dump_packet_raw(data)
       return
+    if self.is_own_vcdj_keepalive(packet):
+      return
+    if self.vcdj_conflicts_with_keepalive(packet):
+      old_player_number = self.vcdj.player_number
+      self.vcdj_auto_set_player_number(5, reserved={packet.content.player_number})
+      logging.warning(
+        "VCDJ player number %d is already used by %s (%s), falling back to %d",
+        old_player_number,
+        packet.content.ip_addr,
+        packet.model,
+        self.vcdj.player_number)
     # both packet types give us enough information to store the client
     if packet["type"] in ["type_ip", "type_status", "type_change"]:
       self.cl.eatKeepalive(packet)
@@ -111,6 +161,26 @@ class ProDj(Thread):
         logging.info("Guessed own interface {} ip {} mask {} mac {}".format(*self.own_ip))
         self.vcdj_set_iface()
     packets_dump.dump_keepalive_packet(packet)
+
+  def is_own_vcdj_keepalive(self, packet):
+    if packet["type"] not in ["type_ip", "type_status"]:
+      return False
+    if self.vcdj.ip_addr == "" or self.vcdj.mac_addr == "":
+      return False
+    return (
+      packet.content.ip_addr == self.vcdj.ip_addr and
+      packet.content.mac_addr == self.vcdj.mac_addr and
+      packet.content.player_number == self.vcdj.player_number
+    )
+
+  def vcdj_conflicts_with_keepalive(self, packet):
+    if not self.vcdj_player_number_auto:
+      return False
+    if packet["type"] not in ["type_ip", "type_status"]:
+      return False
+    if packet.content.player_number != self.vcdj.player_number:
+      return False
+    return not self.is_own_vcdj_keepalive(packet)
 
   def handle_beat_packet(self, data, addr):
     #logging.debug("Broadcast beat packet from {}".format(addr))
