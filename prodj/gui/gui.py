@@ -94,8 +94,6 @@ class PlayerWidget(QFrame):
     self.menu = QMenu(self.menu_button)
     action_browse = self.menu.addAction("Browse Media")
     action_browse.triggered.connect(self.openBrowseDialog)
-    action_download = self.menu.addAction("Download track")
-    action_download.triggered.connect(self.downloadTrack)
     action_start = self.menu.addAction("Start playback")
     action_start.triggered.connect(self.playbackStart)
     action_stop = self.menu.addAction("Stop playback")
@@ -355,15 +353,6 @@ class PlayerWidget(QFrame):
     if self.browse_dialog is None:
       self.browse_dialog = Browser(self.parent().prodj, self.player_number)
     self.browse_dialog.show()
-
-  def downloadTrack(self):
-    logging.info("Player %d track download requested", self.player_number)
-    c = self.parent().prodj.cl.getClient(self.player_number)
-    if c is None:
-      logging.error("Download failed, player %d unknown", self.player_number)
-      return
-    self.parent().prodj.data.get_mount_info(c.loaded_player_number, c.loaded_slot,
-      c.track_id, self.parent().prodj.nfs.enqueue_download_from_mount_info)
 
   def playbackStart(self):
     self.parent_gui.prodj.vcdj.command_fader_start_single(self.player_number, start=True)
